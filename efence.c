@@ -1,7 +1,7 @@
 /*
  * Electric Fence - Red-Zone memory allocator.
  * Bruce Perens, 1988, 1993
- * 
+ *
  * For email below, drop spaces and <spam-buster> tag.
  * MODIFIED:  March 20, 2014 (jric<spam-buster> @ <spam-buster> chegg DOT com)
  *
@@ -206,7 +206,7 @@ static void lock() {
        } else {
            pthread_mutex_lock(&mutex);
        }
-    } 
+    }
     mutexpid=getpid();
     locknr=1;
 }
@@ -377,6 +377,7 @@ allocateMoreSlots(void)
 	size_t	newSize = allocationListSize + bytesPerPage;
 	void *	newAllocation;
 	void *	oldAllocation = allocationList;
+    Slot* slot = NULL;
 
 	Page_AllowAccess(allocationList, allocationListSize);
 	noAllocationListProtection = 1;
@@ -390,6 +391,12 @@ allocateMoreSlots(void)
 	allocationListSize = newSize;
 	slotCount += slotsPerPage;
 	unUsedSlots += slotsPerPage;
+
+    /* Update the allocator's checklist in slot[0] */
+	slot = allocationList;
+	slot[0].internalSize = slot[0].userSize = allocationListSize;
+	slot[0].internalAddress = slot[0].userAddress = allocationList;
+	slot[0].mode = INTERNAL_USE;
 
 	free(oldAllocation);
 
@@ -417,11 +424,11 @@ allocateMoreSlots(void)
  * functions on Sun systems, which do word references to the string memory
  * and may refer to memory up to three bytes beyond the end of the string.
  * For this reason, I take the alignment requests to memalign() and valloc()
- * seriously, and 
- * 
+ * seriously, and
+ *
  * Electric Fence wastes lots of memory. I do a best-fit allocator here
  * so that it won't waste even more. It's slow, but thrashing because your
- * working set is too big for a system's RAM is even slower. 
+ * working set is too big for a system's RAM is even slower.
  */
 extern C_LINKAGE void *
 memalign(size_t alignment, size_t userSize)
@@ -482,7 +489,7 @@ memalign(size_t alignment, size_t userSize)
 	if ( !internalUse && unUsedSlots < 7 ) {
 		allocateMoreSlots();
 	}
-	
+
 	/*
 	 * Iterate through all of the slot structures. Attempt to find a slot
 	 * containing free memory of the exact right size. Accept a slot with
@@ -492,7 +499,7 @@ memalign(size_t alignment, size_t userSize)
 	 * we have to create new memory and mark it as free.
 	 *
 	 */
-	
+
 	for ( slot = allocationList, count = slotCount ; count > 0; count-- ) {
 		if ( slot->mode == FREE
 		 && slot->internalSize >= internalSize ) {
@@ -583,7 +590,7 @@ memalign(size_t alignment, size_t userSize)
 				Page_AllowAccess(
 				 fullSlot->internalAddress
 				,internalSize - bytesPerPage);
-			
+
 		address += internalSize - bytesPerPage;
 
 		/* Set up the "dead" page. */
@@ -602,7 +609,7 @@ memalign(size_t alignment, size_t userSize)
 
 		/* Set up the "dead" page. */
 		Page_DenyAccess(address, bytesPerPage);
-			
+
 		address += bytesPerPage;
 
 		/* Set up the "live" page. */
@@ -631,7 +638,7 @@ slotForUserAddress(void * address)
 {
 	register Slot *	slot = allocationList;
 	register size_t	count = slotCount;
-	
+
 	for ( ; count > 0; count-- ) {
 		if ( slot->userAddress == address )
 			return slot;
@@ -649,7 +656,7 @@ slotForInternalAddress(void * address)
 {
 	register Slot *	slot = allocationList;
 	register size_t	count = slotCount;
-	
+
 	for ( ; count > 0; count-- ) {
 		if ( slot->internalAddress == address )
 			return slot;
@@ -668,7 +675,7 @@ slotForInternalAddressPreviousTo(void * address)
 {
 	register Slot *	slot = allocationList;
 	register size_t	count = slotCount;
-	
+
 	for ( ; count > 0; count-- ) {
 		if ( ((char *)slot->internalAddress)
 		 + slot->internalSize == address )
@@ -713,21 +720,17 @@ free(void * address)
 		}
 	}
 
-	if ( EF_PROTECT_FREE )
-		slot->mode = PROTECTED;
-	else
-		slot->mode = FREE;
+    slot->mode = EF_PROTECT_FREE ? PROTECTED : FREE;
 
-       if ( EF_FREE_WIPES )
-               memset(slot->userAddress, 0xbd, slot->userSize);
+    if ( EF_FREE_WIPES )
+    {
+        memset(slot->userAddress, 0xbd, slot->userSize);
+    }
 
+    /* Only coalesces the same mode of previous/next slot with this one. */
 	previousSlot = slotForInternalAddressPreviousTo(slot->internalAddress);
-	nextSlot = slotForInternalAddress(
-	 ((char *)slot->internalAddress) + slot->internalSize);
-
-	if ( previousSlot
-	 && (previousSlot->mode == FREE || previousSlot->mode == PROTECTED) ) {
-		/* Coalesce previous slot with this one. */
+	if ( previousSlot && (previousSlot->mode == slot->mode) )
+	{
 		previousSlot->internalSize += slot->internalSize;
 		if ( EF_PROTECT_FREE )
 			previousSlot->mode = PROTECTED;
@@ -738,9 +741,10 @@ free(void * address)
 		slot = previousSlot;
 		unUsedSlots++;
 	}
-	if ( nextSlot
-	 && (nextSlot->mode == FREE || nextSlot->mode == PROTECTED) ) {
-		/* Coalesce next slot with this one. */
+
+    nextSlot = slotForInternalAddress(((char *)slot->internalAddress) + slot->internalSize);
+	if ( nextSlot && (nextSlot->mode == slot->mode) )
+	{
 		slot->internalSize += nextSlot->internalSize;
 		nextSlot->internalAddress = nextSlot->userAddress = 0;
 		nextSlot->internalSize = nextSlot->userSize = 0;
@@ -754,7 +758,7 @@ free(void * address)
 	/*
 	 * Free memory is _always_ set to deny access. When EF_PROTECT_FREE
 	 * is true, free memory is never reallocated, so it remains access
-	 * denied for the life of the process. When EF_PROTECT_FREE is false, 
+	 * denied for the life of the process. When EF_PROTECT_FREE is false,
 	 * the memory may be re-allocated, at which time access to it will be
 	 * allowed again.
 	 */
@@ -779,7 +783,7 @@ realloc(void * oldBuffer, size_t newSize)
 
 		Page_AllowAccess(allocationList, allocationListSize);
 		noAllocationListProtection = 1;
-		
+
 		slot = slotForUserAddress(oldBuffer);
 
 		if ( slot == 0 )
@@ -800,7 +804,7 @@ realloc(void * oldBuffer, size_t newSize)
 
 		if ( size < newSize )
 			memset(&(((char *)newBuffer)[size]), 0, newSize - size);
-		
+
 		/* Internal memory was re-protected in free() */
 	}
 	unlock();
@@ -811,14 +815,14 @@ realloc(void * oldBuffer, size_t newSize)
 extern C_LINKAGE void *
 malloc(size_t size)
 {
-        void  *allocation;   
- 
+        void  *allocation;
+
         if ( allocationList == 0 ) {
-                pthread_mutex_init(&mutex, NULL); 
+                pthread_mutex_init(&mutex, NULL);
                 initialize();   /* This sets EF_ALIGNMENT */
-        }       
+        }
         lock();
-        allocation=memalign(EF_ALIGNMENT, size); 
+        allocation=memalign(EF_ALIGNMENT, size);
 
         unlock();
 
@@ -868,9 +872,9 @@ calloc(size_t nelem, size_t elsize)
 {
 	size_t	size = nelem * elsize;
         void * allocation;
-        
+
         lock();
-       
+
         allocation = malloc(size);
         memset(allocation, 0, size);
         unlock();
@@ -886,10 +890,10 @@ extern C_LINKAGE void *
 valloc (size_t size)
 {
         void * allocation;
-       
+
         lock();
         allocation= memalign(bytesPerPage, size);
         unlock();
-       
+
         return allocation;
 }
